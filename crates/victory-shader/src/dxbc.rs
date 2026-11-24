@@ -80,9 +80,16 @@ impl<'a> Container<'a> {
         if count > MAX_PARTS {
             return Err(ShaderError::Malformed("implausible part count"));
         }
+        let table_end = HEADER_SIZE + 4 * count;
+        if table_end > total {
+            return Err(ShaderError::Malformed("part table out of bounds"));
+        }
         let mut parts = Vec::with_capacity(count);
         for i in 0..count {
             let offset = u32_at(data, HEADER_SIZE + 4 * i)? as usize;
+            if offset < table_end {
+                return Err(ShaderError::Malformed("part offset inside the part table"));
+            }
             let fourcc = FourCC(
                 data.get(offset..offset + 4)
                     .ok_or(ShaderError::Malformed("part header out of bounds"))?
@@ -177,5 +184,29 @@ mod tests {
         assert!(Container::parse(&bytes).is_err());
         bytes.truncate(last);
         assert!(Container::parse(&bytes).is_err());
+    }
+
+    #[test]
+    fn rejects_a_part_inside_the_header_or_part_table() {
+        // Offset 0 used to read the container's own "DXBC" magic as a part
+        // FourCC, and the zero digest as its empty body.
+        let mut bytes = build(&[(FourCC::SFI0, &[])]);
+        bytes[0x20..0x24].copy_from_slice(&0u32.to_le_bytes());
+        assert_eq!(
+            Container::parse(&bytes).unwrap_err(),
+            ShaderError::Malformed("part offset inside the part table")
+        );
+    }
+
+    #[test]
+    fn rejects_a_part_table_past_the_declared_size() {
+        let mut bytes = build(&[(FourCC::SFI0, &[])]);
+        // Two offsets, but the container ends after the first one.
+        bytes[0x1C..0x20].copy_from_slice(&2u32.to_le_bytes());
+        bytes[0x18..0x1C].copy_from_slice(&0x24u32.to_le_bytes());
+        assert_eq!(
+            Container::parse(&bytes).unwrap_err(),
+            ShaderError::Malformed("part table out of bounds")
+        );
     }
 }
